@@ -1,0 +1,7 @@
+# Rate gains raised for the high pitch inertia of the probe boom (Iyy ~2.2 kg m^2)
+ATC_RAT_RLL_P   0.30
+ATC_RAT_RLL_I   0.20
+ATC_RAT_RLL_D   0.012
+ATC_RAT_PIT_P   0.40
+ATC_RAT_PIT_I   0.25
+ATC_RAT_PIT_D   0.016

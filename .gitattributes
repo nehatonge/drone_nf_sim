@@ -1,0 +1,4 @@
+# scripts run inside WSL: always LF
+* text=auto eol=lf
+*.png binary
+*.pdf binary

@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+.venv/
+venv*/
+
+# simulation outputs (normally written to ~/nf_runs)
+nf_runs/
+*.csv
+*.png
+*.bin
+*.BIN
+*.tlog
+logs/
+terrain/
+eeprom.bin
+scan_path.json
+
+.vscode/
+.idea/
