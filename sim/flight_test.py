@@ -71,9 +71,15 @@ def probe_for_body(b):
     return (b[0] + (c * ox - s * oy), b[1] + (s * ox + c * oy), b[2] + oz)
 
 
+# World ENU position of ArduPilot's local NED origin (EKF origin). In SITL this is the
+# Gazebo world origin, not the spawn point; measured on the ground by calibrate_origin().
+local_origin_enu = list(HOME_ENU)
+
+
 def enu_to_local_ned(p):
-    """ENU world -> ArduPilot local NED relative to home (the spawn point)."""
-    return (p[1] - HOME_ENU[1], p[0] - HOME_ENU[0], -(p[2] - HOME_ENU[2]))
+    """ENU world -> ArduPilot local NED relative to the EKF origin."""
+    o = local_origin_enu
+    return (p[1] - o[1], p[0] - o[0], -(p[2] - o[2]))
 
 
 # ----------------------------------------------------------------- truth
@@ -191,6 +197,7 @@ class Vehicle:
         threading.Thread(target=self._pump, daemon=True).start()
         self.armed = False
         self.mode_name = ""
+        self.local_ned = None
 
     def _pump(self):
         """Keep reading MAVLink so the socket never backs up; print FC messages."""
@@ -206,6 +213,8 @@ class Vehicle:
             elif t == "HEARTBEAT" and msg.get_srcSystem() == self.m.target_system:
                 self.armed = bool(msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
                 self.mode_name = mavutil.mode_string_v10(msg)
+            elif t == "LOCAL_POSITION_NED":
+                self.local_ned = (msg.x, msg.y, msg.z)
 
     def wait_ready(self, timeout=180):
         print("waiting for EKF / GPS ...")
@@ -217,6 +226,22 @@ class Vehicle:
                 return
             time.sleep(0.2)
         raise RuntimeError("EKF never started using GPS")
+
+    def calibrate_origin(self, truth, seconds=3.0):
+        """Find where ArduPilot's local NED origin sits in the Gazebo world: true body
+        position minus the EKF local position, averaged on the ground."""
+        acc, t_end = [], time.time() + seconds
+        while time.time() < t_end:
+            if self.local_ned is not None:
+                n, e, d = self.local_ned
+                b = truth.probe()[3]
+                acc.append((b[0] - e, b[1] - n, b[2] + d))
+            time.sleep(0.1)
+        if not acc:
+            raise RuntimeError("no LOCAL_POSITION_NED from the vehicle")
+        for k in range(3):
+            local_origin_enu[k] = sum(a[k] for a in acc) / len(acc)
+        print("EKF origin in world ENU:", tuple(round(c, 2) for c in local_origin_enu))
 
     def mode(self, name):
         for _ in range(10):
@@ -281,6 +306,7 @@ def move(v, truth, rec, p0, p1, speed, phase):
 
 def take_off(v, truth, rec, probe_alt):
     v.wait_ready()
+    v.calibrate_origin(truth)
     v.mode("GUIDED")
     v.arm()
     start = truth.probe()[1]
