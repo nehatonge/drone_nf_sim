@@ -5,6 +5,9 @@ Flight tests for the near-field hexacopter in Gazebo + ArduPilot SITL.
   python3 flight_test.py hold  [--alt 4] [--hold 40]        take off, hover in place (stability)
   python3 flight_test.py hover [--alt 4] [--hold 40]        hover with the probe on the scan plane
   python3 flight_test.py scan  [--freq-ghz 3] [--width 3] [--height 3] [--speed 0.5]
+  python3 flight_test.py grid  [--spacing 0.15] [--hold-time 10] [--max-points N] [--resume ID]
+        stop-and-go grid from the lab corner to the AUT: at each point arrive, hover
+        --hold-time s, measure S21 over the sweep with em_model.py, save to SQLite (scan_db.py)
 
 The script commands the vehicle through MAVLink (GUIDED mode, like a GCS / the
 Jetson would) and records the TRUE probe pose from Gazebo (/world/<w>/pose/info)
@@ -25,11 +28,19 @@ import subprocess
 import threading
 import time
 
+import numpy as np
 from pymavlink import mavutil
 
 WORLD = "catr_lab"
 MODEL = os.environ.get("NF_MODEL", "nf_hexa")
-PROBE_OFFSET = (1.25, 0.0, -0.15)
+# Probe aperture centre, boresight and E-plane direction in the body frame (x fwd, y left,
+# z up); must match gen_nf_hexa.py. Selected in main() with --probe.
+PROBES = {
+    "forward": dict(offset=(1.25, 0.0, -0.15), normal=(1, 0, 0), e=(0, 1, 0)),
+    "down": dict(offset=(1.25, 0.0, -0.30), normal=(0, 0, -1), e=(0, 1, 0)),
+}
+PROBE = PROBES["forward"]
+PROBE_OFFSET = PROBE["offset"]
 HOME_ENU = (6.0, 0.0, 0.40)        # spawn pose of the model origin
 YAW_ENU = math.pi                  # facing the AUT
 YAW_NED = math.pi / 2 - YAW_ENU    # NED heading (rad): -90 deg = west
@@ -197,6 +208,7 @@ class Vehicle:
         self.armed = False
         self.mode_name = ""
         self.local_ned = None
+        self.att = None
         self.texts = []
         threading.Thread(target=self._pump, daemon=True).start()
 
@@ -216,6 +228,8 @@ class Vehicle:
                 self.mode_name = mavutil.mode_string_v10(msg)
             elif t == "LOCAL_POSITION_NED":
                 self.local_ned = (msg.x, msg.y, msg.z)
+            elif t == "ATTITUDE":
+                self.att = (msg.roll, msg.pitch, msg.yaw)
 
     def wait_ready(self, timeout=180):
         print("waiting for EKF / UWB position ...")
@@ -274,6 +288,21 @@ class Vehicle:
     def goto_probe(self, p, vel=(0, 0, 0)):
         n, e, d = enu_to_local_ned(body_for_probe(p))
         self.goto_ned(n, e, d, vel[1], vel[0], -vel[2])
+
+    def est_probe(self):
+        """Probe position as the drone itself knows it (EKF: UWB + optical flow), world ENU."""
+        if self.local_ned is None or self.att is None:
+            return None
+        n, e, d = self.local_ned
+        cr, sr = math.cos(self.att[0]), math.sin(self.att[0])
+        cp, sp = math.cos(self.att[1]), math.sin(self.att[1])
+        cy, sy = math.cos(self.att[2]), math.sin(self.att[2])
+        ox, oy, oz = PROBE_OFFSET[0], -PROBE_OFFSET[1], -PROBE_OFFSET[2]      # FLU -> FRD
+        on = cy * cp * ox + (cy * sp * sr - sy * cr) * oy + (cy * sp * cr + sy * sr) * oz
+        oe = sy * cp * ox + (sy * sp * sr + cy * cr) * oy + (sy * sp * cr - cy * sr) * oz
+        od = -sp * ox + cp * sr * oy + cp * cr * oz
+        o = local_origin_enu
+        return (o[0] + e + oe, o[1] + n + on, o[2] - d - od)
 
 
 # ----------------------------------------------------------------- manoeuvres
@@ -414,9 +443,152 @@ def run_scan(v, truth, a, rec):
     leave_and_land(v, truth, rec, end, (standoff[0], end[1], end[2]))
 
 
+# ----------------------------------------------------------------- grid scan
+def grid_points(a):
+    """Serpentine grid from the lab corner (--corner) to the AUT end (--end): lines along
+    x towards the AUT, stepping in y. Returns [(idx, row, col, (x, y, z))]."""
+    (cx, cy), (ex, ey) = a.corner, a.end
+    s = a.spacing
+    nx = int(abs(ex - cx) / s + 1e-9) + 1
+    ny = int(abs(ey - cy) / s + 1e-9) + 1
+    sx, sy = math.copysign(s, ex - cx), math.copysign(s, ey - cy)
+    pts = []
+    for r in range(ny):
+        for c in (range(nx) if r % 2 == 0 else range(nx - 1, -1, -1)):
+            pts.append((len(pts), r, c, (round(cx + c * sx, 4), round(cy + r * sy, 4), a.grid_z)))
+    return pts
+
+
+def wait_arrival(v, truth, rec, p, tol, timeout, settle=1.0):
+    """Hold the setpoint until the drone's own position estimate stays within tol of p for
+    `settle` s. Returns (arrived, seconds taken)."""
+    rec.set("arrive", p)
+    t0, t_in = truth.now(), None
+    while truth.now() - t0 < timeout:
+        v.goto_probe(p)
+        e = v.est_probe()
+        if e is not None and math.dist(e, p) <= tol:
+            t_in = t_in or truth.now()
+            if truth.now() - t_in >= settle:
+                return True, truth.now() - t0
+        else:
+            t_in = None
+        time.sleep(0.05)
+    return False, timeout
+
+
+def hold_and_measure(v, truth, rec, p, model, seconds, sweep_interval):
+    """Hover on p for `seconds` (sim time); log true and estimated probe position at every
+    pose update and take one VNA sweep every sweep_interval at the TRUE probe pose."""
+    rec.set("hold", p)
+    true_pos, est_pos, sweeps = [], [], []
+    t0 = truth.now()
+    next_sweep, last = t0, None
+    while truth.now() < t0 + seconds:
+        v.goto_probe(p)
+        s = truth.wait_new(last, 0.2)
+        if s is None or s[0] == last:
+            continue
+        last, (t, ppos, q, _) = s[0], s
+        true_pos.append(ppos)
+        e = v.est_probe()
+        if e is not None:
+            est_pos.append(e)
+        if t >= next_sweep:
+            sweeps.append(model.measure(ppos, quat_rot(q, PROBE["normal"]), quat_rot(q, PROBE["e"]))[0])
+            next_sweep += sweep_interval
+    return np.array(true_pos), np.array(est_pos), np.array(sweeps), t0, truth.now()
+
+
+def run_grid(v, truth, a, rec):
+    from em_model import NearFieldModel, catr_aut, wr187_probe
+    from scan_db import ScanDB
+
+    db = ScanDB(a.db)
+    if a.resume:
+        grid, settings = db.scan(a.resume)
+        pts = [(g[0], g[1], g[2], tuple(g[3])) for g in grid]
+        for k, val in settings.items():           # keep the original scan's settings
+            setattr(a, k, val)
+        scan_id = a.resume
+    else:
+        pts = grid_points(a)
+        settings = {k: getattr(a, k) for k in ("spacing", "grid_z", "corner", "end", "hold_time", "arrive_tol",
+                                                "arrive_timeout", "step_speed", "transit_speed", "sweep_interval",
+                                                "freq_start", "freq_stop", "freq_points", "noise_db")}
+        scan_id = db.new_scan(pts, settings, model=MODEL, probe=a.probe,
+                              aut="1 x 1 m TE10 aperture at (0,0,4) facing +x, E along y; WR-187 probe",
+                              freq_start_hz=a.freq_start * 1e9, freq_stop_hz=a.freq_stop * 1e9,
+                              freq_points=a.freq_points, spacing_m=a.spacing, hold_s=a.hold_time)
+    done = db.done(scan_id)
+    todo = [p for p in pts if p[0] not in done]
+    if a.max_points:
+        todo = todo[:a.max_points]
+    if not todo:
+        print(f"scan {scan_id}: all {len(pts)} points already saved")
+        return
+    est = len(todo) * (a.hold_time + 1.0 + a.spacing / a.step_speed + 1.0) / 60
+    print(f"scan {scan_id}: {len(pts)} points, {len(done)} saved, flying {len(todo)} now (~{est:.0f} min) "
+          f"-> {db.path}")
+
+    freqs = np.linspace(a.freq_start * 1e9, a.freq_stop * 1e9, a.freq_points)
+    model = NearFieldModel(catr_aut(), wr187_probe(), freqs, noise_db=a.noise_db)
+
+    def check_flying(what):
+        if not v.armed:
+            raise RuntimeError(f"vehicle disarmed during {what} (crash?) - scan {scan_id} stopped, "
+                               f"resume with --resume {scan_id}")
+
+    pad = take_off(v, truth, rec, a.grid_z)
+    move(v, truth, rec, pad, todo[0][3], a.transit_speed, "transit")
+    check_flying("transit")
+    prev = todo[0][3]
+    for n, (idx, row, col, p) in enumerate(todo):
+        move(v, truth, rec, prev, p, a.step_speed, "step")
+        arrived, t_arr = wait_arrival(v, truth, rec, p, a.arrive_tol, a.arrive_timeout)
+        tp, ep, sw, t_h0, t_h1 = hold_and_measure(v, truth, rec, p, model, a.hold_time, a.sweep_interval)
+        check_flying(f"point {idx}")               # never save a point measured on the floor
+        mean = sw.mean(axis=0)
+        amp = 20 * np.log10(np.abs(sw))
+        dphi = np.angle(sw / mean)                    # phase spread around the mean
+        point = dict(idx=idx, row=row, col=col,
+                     target_x=p[0], target_y=p[1], target_z=p[2],
+                     arrived=int(arrived), t_arrive_s=t_arr, t_hold_start=t_h0, t_hold_end=t_h1,
+                     n_sweeps=len(sw))
+        for name, arr in (("est", ep), ("true", tp)):
+            if len(arr):
+                for k, axis in enumerate("xyz"):
+                    point[f"{name}_{axis}"] = float(arr[:, k].mean())
+                    point[f"{name}_std_{axis}"] = float(arr[:, k].std())
+        meas = [dict(freq_hz=float(f), s21_re=float(mean[i].real), s21_im=float(mean[i].imag),
+                     amp_db=float(20 * np.log10(abs(mean[i]))), phase_deg=float(np.degrees(np.angle(mean[i]))),
+                     amp_std_db=float(amp[:, i].std()), phase_std_deg=float(np.degrees(dphi[:, i].std())))
+                for i, f in enumerate(freqs)]
+        db.save_point(scan_id, point, meas)
+        c = len(freqs) // 2
+        err = math.dist((point["est_x"], point["est_y"], point["est_z"]),
+                        (point["true_x"], point["true_y"], point["true_z"])) if "est_x" in point else math.nan
+        print(f"  [{n + 1}/{len(todo)}] point {idx} (row {row}, col {col}) at {p[0]:.2f},{p[1]:.2f}: "
+              f"{'arrived' if arrived else 'NOT arrived'} in {t_arr:.1f}s, est-true {err * 1000:.0f} mm, "
+              f"S21 {meas[c]['amp_db']:.1f} dB {meas[c]['phase_deg']:.0f} deg @ {freqs[c] / 1e9:.2f} GHz",
+              flush=True)
+        prev = p
+
+    move(v, truth, rec, prev, pad, a.transit_speed, "return")
+    hold(v, truth, rec, pad, 3, "return_settle")
+    rec.set("land", pad)
+    v.mode("LAND")
+    t_end = truth.now() + 40
+    while truth.now() < t_end and v.armed:
+        time.sleep(0.5)
+    print(f"scan {scan_id}: {len(db.done(scan_id))}/{len(pts)} points saved")
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("test", choices=["hold", "hover", "scan"])
+    ap.add_argument("test", choices=["hold", "hover", "scan", "grid"])
+    ap.add_argument("--probe", choices=list(PROBES), default=None,
+                    help="probe direction (default: 'down' for *_down models, else 'forward')")
     ap.add_argument("--url", default="tcp:127.0.0.1:5760")
     ap.add_argument("--alt", type=float, default=4.0, help="probe height (m)")
     ap.add_argument("--hold", type=float, default=40)
@@ -428,7 +600,34 @@ def main():
     ap.add_argument("--line-spacing", type=float, default=None)
     ap.add_argument("--speed", type=float, default=0.5)
     ap.add_argument("--tag", default="")
+    g = ap.add_argument_group("grid")
+    g.add_argument("--corner", type=float, nargs=2, default=(10.25, -4.0),
+                   help="first grid point (probe x y): lab corner, 1.5 m clear of the walls and anchor poles")
+    g.add_argument("--end", type=float, nargs=2, default=(1.0, 0.0), help="opposite grid corner, in front of the AUT")
+    g.add_argument("--grid-z", type=float, default=4.0, help="probe height (m), AUT centre height")
+    g.add_argument("--spacing", type=float, default=0.15)
+    g.add_argument("--hold-time", type=float, default=10.0)
+    g.add_argument("--arrive-tol", type=float, default=0.05, help="estimated probe position tolerance (m)")
+    g.add_argument("--arrive-timeout", type=float, default=20.0)
+    g.add_argument("--step-speed", type=float, default=0.2, help="m/s between grid points")
+    g.add_argument("--transit-speed", type=float, default=0.3, help="m/s to the first point and back")
+    g.add_argument("--sweep-interval", type=float, default=1.0, help="s between VNA sweeps during the hold")
+    g.add_argument("--freq-start", type=float, default=4.8, help="GHz")
+    g.add_argument("--freq-stop", type=float, default=5.2, help="GHz")
+    g.add_argument("--freq-points", type=int, default=21)
+    g.add_argument("--noise-db", type=float, default=-70.0, help="VNA noise floor re boresight at 1 m")
+    g.add_argument("--max-points", type=int, default=0, help="stop after N points (0 = all)")
+    g.add_argument("--resume", type=int, default=0, help="continue scan ID from the database")
+    g.add_argument("--db", default=None, help="SQLite file (default data/nf_scans.db)")
     a = ap.parse_args()
+
+    global PROBE, PROBE_OFFSET
+    a.probe = a.probe or ("down" if "down" in MODEL else "forward")
+    PROBE = PROBES[a.probe]
+    PROBE_OFFSET = PROBE["offset"]
+    if a.db is None:
+        from scan_db import DEFAULT_DB
+        a.db = DEFAULT_DB
 
     truth = Truth()
     t0 = time.time()
@@ -438,13 +637,15 @@ def main():
         time.sleep(0.2)
     print("gazebo truth OK, probe at", tuple(round(c, 3) for c in truth.probe()[1]))
     v = Vehicle(a.url)
-    name = {"hold": "hold", "hover": "hover", "scan": f"scan{a.freq_ghz:g}GHz"}[a.test] + a.tag
+    name = {"hold": "hold", "hover": "hover", "scan": f"scan{a.freq_ghz:g}GHz", "grid": "grid"}[a.test] + a.tag
     rec = Recorder(truth, name)
     try:
         if a.test == "hold":
             run_hold(v, truth, rec, a)
         elif a.test == "hover":
             run_hover(v, truth, a, rec)
+        elif a.test == "grid":
+            run_grid(v, truth, a, rec)
         else:
             run_scan(v, truth, a, rec)
     finally:

@@ -25,15 +25,18 @@ ATC_RAT_YAW_FLTE 2
 ATC_RAT_YAW_FLTT 10
 
 # --- attitude controller (large, slow airframe)
+# The probe boom makes pitch inertia ~3x roll (Iyy ~2.7 vs Ixx ~0.85 kg m^2), so pitch
+# rate gains are ~3x roll. With equal gains the pitch loop oscillated with a ~2 s
+# period and grew until the drone crashed (rate output only ~0.2 for 150 deg/s error).
 ATC_ACCEL_R_MAX 20000
 ATC_ACCEL_P_MAX 20000
 ATC_ACCEL_Y_MAX 8000
-ATC_RAT_RLL_P   0.10
-ATC_RAT_RLL_I   0.10
-ATC_RAT_RLL_D   0.004
-ATC_RAT_PIT_P   0.10
-ATC_RAT_PIT_I   0.10
-ATC_RAT_PIT_D   0.004
+ATC_RAT_RLL_P   0.15
+ATC_RAT_RLL_I   0.15
+ATC_RAT_RLL_D   0.006
+ATC_RAT_PIT_P   0.35
+ATC_RAT_PIT_I   0.35
+ATC_RAT_PIT_D   0.014
 ATC_RAT_YAW_P   0.30
 ATC_RAT_YAW_I   0.03
 ACRO_YAW_P      2.0
@@ -66,9 +69,9 @@ RNGFND1_MIN_CM  10
 RNGFND1_MAX_CM  2000
 RNGFND1_GNDCLEAR 23     # reading on the ground (sensor 0.23 m above the floor)
 SIM_FLOW_ENABLE 1
-FLOW_TYPE       10      # SITL optical flow (stands in for HereFlow), not fused yet
+FLOW_TYPE       10      # SITL optical flow (stands in for HereFlow)
 EK3_SRC1_POSXY  6       # ExternalNav (UWB)
-EK3_SRC1_VELXY  0
+EK3_SRC1_VELXY  5       # OpticalFlow (HereFlow), scaled by the rangefinder height
 EK3_SRC1_POSZ   6       # ExternalNav (UWB): rangefinder is unusable over pyramidal floor absorber
 EK3_SRC1_VELZ   0
 EK3_SRC1_YAW    1       # compass

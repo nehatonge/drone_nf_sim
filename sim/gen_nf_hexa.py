@@ -49,7 +49,10 @@ BATTERY = dict(mass=5.60, size=(0.25, 0.14, 0.11), z=-0.10)
 BOOM = dict(mass=0.45, x0=0.10, x1=1.20, z=-0.15, r=0.015)    # GFRP tube + coax
 # Down-facing rangefinder, offset sideways so the beam clears the battery, VNA and boom
 RANGEFINDER = dict(pos=(0.0, 0.12, -0.16), min=0.1, max=20.0, rate=20, topic="/nf/rangefinder")
-PROBE = dict(mass=0.80, x=1.25, z=-0.15, size=(0.15, 0.08, 0.05))  # WR-284 OEWG + adapter
+# OEWG probe + adapter at the boom tip. "forward": aperture faces the AUT (planar NF scan);
+# "down": aperture faces the floor, link origin at the aperture centre (path-following test)
+PROBE = dict(mass=0.80, x=1.25, z=-0.15, size=(0.15, 0.08, 0.05))
+PROBE_DOWN_Z = -0.30
 
 # ArduPilot Hexa-X: (motor number, angle deg clockwise from nose, spin)
 MOTORS = [(1, 90, "CW"), (2, -90, "CCW"), (3, -30, "CW"),
@@ -99,7 +102,7 @@ def box_visual(name, pose, size, rgb, rpy=(0, 0, 0)):
       </visual>"""
 
 
-def build(battery_x, name):
+def build(battery_x, name, probe="forward"):
     r = WHEELBASE / 2
     k = THRUST_MAX_N / W_MAX**2
     area = k / (RHO * CLA * A0 * CP_R**2)
@@ -127,7 +130,12 @@ def build(battery_x, name):
     boom_len = BOOM["x1"] - BOOM["x0"]
     boom_cx = (BOOM["x0"] + BOOM["x1"]) / 2
     Iboom = (BOOM["mass"] * BOOM["r"]**2 / 2, BOOM["mass"] * boom_len**2 / 12, BOOM["mass"] * boom_len**2 / 12)
-    Iprobe = box_inertia(PROBE["mass"], *PROBE["size"])
+    if probe == "down":
+        psize = (PROBE["size"][2], PROBE["size"][1], PROBE["size"][0])    # long axis vertical
+        pz, pbody = PROBE_DOWN_Z, (0, 0, PROBE["size"][0] / 2)            # body sits above the aperture
+    else:
+        psize, pz, pbody = PROBE["size"], PROBE["z"], (0, 0, 0)
+    Iprobe = box_inertia(PROBE["mass"], *psize)
     Iprop = (PROP_MASS * 0.04**2 / 12, PROP_MASS * PROP_D**2 / 12, PROP_MASS * PROP_D**2 / 12)
 
     total = mb + BOOM["mass"] + PROBE["mass"] + 6 * PROP_MASS
@@ -223,15 +231,17 @@ def build(battery_x, name):
     </link>
     <joint name="boom_joint" type="fixed"><parent>base_link</parent><child>boom</child></joint>
     <link name="probe">
-      <pose>{PROBE['x']:.4f} 0 {PROBE['z']:.4f} 0 0 0</pose>
+      <pose>{PROBE['x']:.4f} 0 {pz:.4f} 0 0 0</pose>
       <enable_wind>true</enable_wind>
-{inertial(PROBE['mass'], (0, 0, 0), Iprobe)}
+{inertial(PROBE['mass'], pbody, Iprobe)}
       <visual name="probe_visual">
-        <geometry><box><size>{PROBE['size'][0]} {PROBE['size'][1]} {PROBE['size'][2]}</size></box></geometry>
+        <pose>{pbody[0]} {pbody[1]} {pbody[2]:.4f} 0 0 0</pose>
+        <geometry><box><size>{psize[0]} {psize[1]} {psize[2]}</size></box></geometry>
         <material><ambient>0.2 0.4 1 1</ambient><diffuse>0.2 0.4 1 1</diffuse></material>
       </visual>
       <collision name="probe_collision">
-        <geometry><box><size>{PROBE['size'][0]} {PROBE['size'][1]} {PROBE['size'][2]}</size></box></geometry>
+        <pose>{pbody[0]} {pbody[1]} {pbody[2]:.4f} 0 0 0</pose>
+        <geometry><box><size>{psize[0]} {psize[1]} {psize[2]}</size></box></geometry>
       </collision>
     </link>
     <joint name="probe_joint" type="fixed"><parent>boom</parent><child>probe</child></joint>""")
@@ -321,9 +331,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--battery-x", type=float, default=0.0, help="battery x position (m), negative = aft")
     ap.add_argument("--name", default="nf_hexa")
+    ap.add_argument("--probe", choices=["forward", "down"], default="forward", help="probe aperture direction")
     ap.add_argument("--models-dir", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "models"))
     a = ap.parse_args()
-    sdf, total, cg_x, k, area, cda = build(a.battery_x, a.name)
+    sdf, total, cg_x, k, area, cda = build(a.battery_x, a.name, a.probe)
     d = os.path.join(a.models_dir, a.name)
     os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, "model.sdf"), "w") as f:

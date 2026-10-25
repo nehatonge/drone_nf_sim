@@ -67,7 +67,7 @@ def main():
     a = ap.parse_args()
 
     d = load(a.csv)
-    sel = np.array([p.startswith("line") or p == "hover" for p in d["phase"]])
+    sel = np.array([p.startswith("line") or p in ("hover", "hold") for p in d["phase"]])
     t = d["t"][sel]
     ex = d["probe_x"][sel] - d["ref_x"][sel]          # range axis (normal to the scan plane)
     ey = d["probe_y"][sel] - d["ref_y"][sel]          # along the raster line

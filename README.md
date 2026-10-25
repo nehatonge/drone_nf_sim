@@ -50,11 +50,11 @@ Numbers match Table 1 / Figure 3 of the report.
 | 8 | RTK-GNSS + compass | **Indoors: UWB tag on the mast** + compass. `uwb_extnav.py` turns true tag position into noisy anchor ranges, solves the position and sends it as external navigation (`EK3_SRC1_POSXY/POSZ 6`). GPS off. | `sim/uwb_extnav.py`, `params/nf_hexa.parm` |
 | 9 | Telemetry radio | MAVLink over UDP 14550 (MAVProxy) / TCP 5760 (scripts); UWB on TCP 5762 | `sim/run_sim.sh` |
 | 10 | Rangefinder (down) | Single-beam Gazebo lidar → ArduPilotPlugin → `RNGFND1_TYPE 100`. Logged, not used for height: over pyramidal floor absorber it reads tips and valleys. | `sim/gen_nf_hexa.py` |
-| 11 | HereFlow optical flow | SITL optical flow (`FLOW_TYPE 10`), not fused | `params/nf_hexa.parm` |
-| 12 | VNA / RF receiver | Mass only (0.40 kg). **No RF measurement yet** (report step 5) | `sim/gen_nf_hexa.py` |
+| 11 | HereFlow optical flow | SITL optical flow (`FLOW_TYPE 10`), fused for velocity (`EK3_SRC1_VELXY 5`) | `params/nf_hexa.parm` |
+| 12 | VNA / RF receiver | 0.40 kg mass + S21 sweep from the EM model (4.8–5.2 GHz, 21 points, 1 sweep/s) at the true probe pose | `sim/em_model.py` |
 | 13 | Probe mount | Mass only (0.20 kg) | `sim/gen_nf_hexa.py` |
 | 14 | Probe boom + coax | `boom` link, GFRP tube 0.10–1.20 m forward, 0.45 kg | `sim/gen_nf_hexa.py` |
-| 15 | Waveguide probe | `probe` link at x = 1.25 m, z = −0.15 m (WR-284 S-band OEWG, 0.8 kg) | `sim/gen_nf_hexa.py` |
+| 15 | Waveguide probe | `probe` link at the boom tip, 0.8 kg. Forward-facing (`nf_hexa`, `nf_hexa_trimmed`) or downward-facing (`nf_hexa_down`). RF: open-ended WR-187 (3.95–5.85 GHz) | `sim/gen_nf_hexa.py`, `sim/em_model.py` |
 | G | AUT + RF source | AUT on the CATR positioner in the quiet zone | `sim/gen_catr_lab.py` |
 | G | CATR reflector + feed | Reference far-field measurement of the AUT | `sim/gen_catr_lab.py` |
 | G | UWB anchors (replace RTK base) | 8 anchors, positions in `catr_layout.py` | `sim/gen_catr_lab.py` |
@@ -71,16 +71,49 @@ when the parts are chosen, then regenerate the model.
 | 1 | Scenario setup (band, AUT, scan plane, error budget) | `analysis/sizing_check.py`, CLI args |
 | 2 | Scan path planner | `analysis/scan_path.py`, `raster_traj()` in `flight_test.py` |
 | 3 | Drone simulation, flight controller in the loop | Gazebo + ArduPilot SITL + UWB (ROS 2 bridge not used yet) |
-| 4 | Pose + data log | CSV of true probe pose from Gazebo (not rosbag yet) |
-| 5 | EM near-field model at logged poses | To do |
+| 4 | Pose + data log | CSV of true probe pose from Gazebo; grid scans in SQLite (not rosbag yet) |
+| 5 | EM near-field model at logged poses | `sim/em_model.py`: 5 GHz 1 × 1 m AUT, WR-187 probe; checked by `sim/em_selftest.py` |
 | 6 | NF-FF transformation (probe correction, plane-wave spectrum) | To do |
 | 7 | Far-field pattern + error metrics | Position/phase-error verdict per band in `analyze_flight.py`; comparison with the CATR reference pattern to do |
 
+## Grid scan (stop-and-go)
+
+`flight_test.py grid` flies a horizontal serpentine grid at the AUT's height (4 m),
+from the lab corner (probe at x 10.25, y −4.0) to just in front of the AUT
+(x ≈ 1.1, y 0), 15 cm spacing: 62 × 27 = 1674 points. At each point:
+
+1. move there at 0.2 m/s
+2. wait until the drone's **own** estimate (UWB + optical flow) is within 5 cm for 1 s
+   (20 s timeout; the point is still measured and flagged `arrived = 0`)
+3. hover 10 s; log true and estimated probe position; take a VNA sweep every second
+   at the true probe pose (`em_model.py`)
+4. save the point and its averaged sweep to SQLite, then continue
+
+The full grid takes about 7 h, far more than one battery, so every point is committed
+on its own and `--resume <scan_id>` continues where a scan stopped. The script stops if
+the drone disarms, so no point is saved from the floor.
+
+**Spacing:** 15 cm is fine for testing path following, but it is 2.5 λ at 5 GHz. A
+near-field scan for NF-FF needs ≤ λ/2 = 3 cm (`--spacing 0.03`).
+
+The database is `data/nf_scans.db` (Windows: `C:\Users\nehat\drone_nf_sim\data\nf_scans.db`,
+open with DB Browser for SQLite):
+
+| Table | One row per | Main columns |
+|---|---|---|
+| `scans` | scan | start time, model, probe, frequency sweep, spacing, hold time, grid and settings (JSON) |
+| `points` | grid point | target, estimated (EKF) and true (Gazebo) probe position with std over the hold, arrived, timing |
+| `measurements` | point × frequency | S21 (re, im), amplitude dB, phase deg, and their std over the sweeps |
+
+Amplitudes are relative to the probe facing the AUT on boresight at 1 m (0 dB).
+
 ## Known issues
 
-- **Pitch instability when translating.** `hold` is stable (≈ 8 mm rms). Moving
-  horizontally at 1 m/s (`hover`, `scan`) builds a pitch oscillation up to ±40° and the
-  drone loses position. Not yet diagnosed (rotor aerodynamics model or gains).
+- **Gains are inertia-scaled, not auto-tuned.** The boom makes pitch inertia ~3× roll;
+  with equal gains the pitch loop oscillated and the drone crashed on any horizontal
+  move. Pitch rate gains are now ~3× roll (`params/nf_hexa.parm`), verified on the grid
+  transits (max 3–6° tilt). `hover`/`scan` with the forward probe are not re-tested yet.
+  Real hardware will need its own AUTOTUNE.
 - **UWB is too coarse to know the probe position for phase.** ~30 mm fix error is
   ≈ 108° at S-band against a λ/50 (7.2°) criterion. The drone can fly on UWB, but the
   near-field data needs a more accurate position reference (motion capture or laser
@@ -94,9 +127,13 @@ when the parts are chosen, then regenerate the model.
 setup/      install scripts for WSL Ubuntu 24.04 (run in order 01, 02, 03)
 sim/
   catr_layout.py       CATR lab dimensions, reflector, feed, AUT, UWB anchors (edit here)
+  em_model.py          EM model: AUT aperture -> probe S21 over a frequency sweep
+  em_selftest.py       checks the EM model against the analytical far-field pattern
+  scan_db.py           SQLite store for grid scans; run it to list scans and points
   gen_catr_lab.py      generates the lab model (absorber meshes) and worlds/catr_lab.sdf
   gen_nf_hexa.py       generates the hexacopter SDF from the component list
-  models/              generated: catr_lab, nf_hexa (as built), nf_hexa_trimmed (battery 24 cm aft)
+  models/              generated: catr_lab, nf_hexa (as built), nf_hexa_trimmed (battery 24 cm aft),
+                       nf_hexa_down (trimmed, probe facing down)
   worlds/catr_lab.sdf  generated world (drone filled in by run_sim.sh)
   params/              ArduCopter parameter files
   uwb_extnav.py        UWB positioning -> ArduPilot external navigation
@@ -135,6 +172,16 @@ python3 analysis/sizing_check.py                    # static checks, no simulato
 python3 sim/gen_catr_lab.py
 python3 sim/gen_nf_hexa.py
 python3 sim/gen_nf_hexa.py --name nf_hexa_trimmed --battery-x -0.24
+python3 sim/gen_nf_hexa.py --name nf_hexa_down --battery-x -0.24 --probe down
+
+python3 sim/em_selftest.py                          # EM model check, no simulator
+
+# grid scan: a short test first, then the full grid, resumable
+./sim/test_run.sh --model nf_hexa_down -- grid --max-points 10
+./sim/test_run.sh --model nf_hexa_down -- grid --corner 10.25 -4.0 --end 9.65 -3.70   # 5 x 3 points
+./sim/test_run.sh --model nf_hexa_down -- grid --resume 1
+python3 sim/scan_db.py                              # list scans
+python3 sim/scan_db.py 1                            # points of scan 1
 
 # interactive: Gazebo GUI + MAVProxy console
 ./sim/run_sim.sh --model nf_hexa_trimmed
