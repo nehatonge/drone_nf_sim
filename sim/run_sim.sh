@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Launch Gazebo (nf_range world) + ArduPilot SITL for the near-field hexacopter.
+# Launch Gazebo (CATR lab world) + ArduPilot SITL + UWB positioning for the near-field hexacopter.
 #
 #   ./run_sim.sh [--model nf_hexa|nf_hexa_trimmed] [--wind MPS] [--gust MPS] [--headless]
+#                [--params FILE] [--uwb "ARGS"]     e.g. --uwb "--range-sigma 0.10 --nlos-prob 0.05"
 #
-# Gazebo runs in the background; SITL (MAVProxy console) runs in the foreground.
-# MAVLink for scripts: udp:127.0.0.1:14550
+# Gazebo and uwb_extnav.py run in the background; SITL (MAVProxy console) in the foreground.
+# --wind/--gust stand in for air drafts (HVAC, downwash recirculation) in the lab.
+# MAVLink for scripts: udp:127.0.0.1:14550 (or tcp:127.0.0.1:5760 with --batch)
 set -eo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,6 +15,7 @@ WIND=0
 GUST=0
 HEADLESS=0
 BATCH=0
+UWB_ARGS=""
 PARAM_ARGS=("--add-param-file=$HERE/params/nf_hexa.parm")
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -22,6 +25,7 @@ while [[ $# -gt 0 ]]; do
     --headless) HEADLESS=1; shift ;;
     --batch) HEADLESS=1; BATCH=1; shift ;;
     --params) PARAM_ARGS+=("--add-param-file=$(realpath "$2")"); shift 2 ;;
+    --uwb) UWB_ARGS="$2"; shift 2 ;;
     *) echo "unknown arg $1"; exit 1 ;;
   esac
 done
@@ -36,10 +40,10 @@ export GZ_SIM_SYSTEM_PLUGIN_PATH="$HOME/gz_ws/src/ardupilot_gazebo/build:${GZ_SI
 # Build the world for this run (model + wind)
 RUN_DIR="$HOME/nf_runs"
 mkdir -p "$RUN_DIR"
-WORLD="$RUN_DIR/nf_range_run.sdf"
+WORLD="$RUN_DIR/catr_lab_run.sdf"
 WIND_XML=""
 if [[ "$WIND" != "0" || "$GUST" != "0" ]]; then
-  # Wind from the north-west quarter, blowing across the scan plane and onto the AUT.
+  # Draft blowing down-range and across the scan plane, onto the AUT.
   WIND_XML="<wind><linear_velocity>$(python3 -c "import math;w=$WIND;print(f'{-w*math.cos(math.radians(30)):.3f} {-w*math.sin(math.radians(30)):.3f} 0')")</linear_velocity></wind>
     <plugin filename=\"gz-sim-wind-effects-system\" name=\"gz::sim::systems::WindEffects\">
       <force_approximation_scaling_factor>0.35</force_approximation_scaling_factor>
@@ -60,7 +64,7 @@ if [[ "$WIND" != "0" || "$GUST" != "0" ]]; then
       </vertical>
     </plugin>"
 fi
-python3 - "$HERE/worlds/nf_range.sdf" "$WORLD" "$MODEL" "$WIND_XML" <<'EOF'
+python3 - "$HERE/worlds/catr_lab.sdf" "$WORLD" "$MODEL" "$WIND_XML" <<'EOF'
 import sys
 src, dst, model, wind = sys.argv[1:5]
 s = open(src).read().replace("MODEL_NAME", model).replace("<!--WIND_PLUGIN-->", wind)
@@ -74,11 +78,17 @@ GZ_ARGS="-r -v2 $WORLD"
 [[ $HEADLESS == 1 ]] && GZ_ARGS="-s $GZ_ARGS"
 gz sim $GZ_ARGS > "$RUN_DIR/gz.log" 2>&1 &
 GZ_PID=$!
-trap 'kill $GZ_PID 2>/dev/null; pkill -f "gz sim" 2>/dev/null' EXIT
 sleep 5
 
-# ArduPilot SITL, hexa frame, physics from Gazebo (JSON)
 [[ -f "$HOME/venv-ardupilot/bin/activate" ]] && source "$HOME/venv-ardupilot/bin/activate"
+
+# UWB positioning (no GNSS indoors); connects to SITL SERIAL1 once SITL is up
+export NF_MODEL="$MODEL"
+python3 -u "$HERE/uwb_extnav.py" $UWB_ARGS > "$RUN_DIR/uwb.log" 2>&1 &
+UWB_PID=$!
+trap 'kill $UWB_PID $GZ_PID 2>/dev/null; pkill -f "gz sim" 2>/dev/null' EXIT
+
+# ArduPilot SITL, hexa frame, physics from Gazebo (JSON)
 cd "$RUN_DIR"
 if [[ $BATCH == 1 ]]; then
   # no MAVProxy: scripts connect straight to SITL on tcp:127.0.0.1:5760

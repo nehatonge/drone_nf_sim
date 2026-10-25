@@ -4,7 +4,7 @@ Turns a flight_test.py CSV into the position-error verdict for each band.
 
 Two error sources for the near-field data:
   tracking error  = true probe position - planned grid point   (flight dynamics, wind)
-  knowledge error = logged position     - true probe position  (RTK-GNSS + attitude error)
+  knowledge error = logged position     - true probe position  (UWB + attitude error)
 
 If NF-FF uses the PLANNED grid, the phase error comes from the tracking error.
 If NF-FF uses the LOGGED positions (report section 4), it comes from the knowledge
@@ -13,7 +13,10 @@ error only - but the samples are then off-grid in the plane.
 Only the range axis (x, normal to the scan plane) maps straight into phase:
   dphi = 360 deg * dx / lambda. Criterion: |dx| <= lambda/50 (about 7 deg).
 
-  python3 analyze_flight.py <csv> [--rtk-sigma 0.01] [--rtk-tau 60]
+  python3 analyze_flight.py <csv> [--pos-sigma 0.03] [--pos-tau 0.5]
+
+Default position-error model: UWB fixes from uwb_extnav.py in the CATR lab
+(about 30 mm horizontal, 45 mm vertical rms with 5 cm range noise, see ~/nf_runs/uwb.log).
 """
 import argparse
 import math
@@ -38,7 +41,7 @@ def load(path):
 
 
 def gauss_markov(t, sigma, tau, rng):
-    """First-order Gauss-Markov process: slowly drifting RTK error, std sigma, correlation time tau."""
+    """First-order Gauss-Markov process: position error with std sigma, correlation time tau."""
     e = np.zeros_like(t)
     e[0] = rng.normal(0, sigma)
     for i in range(1, len(t)):
@@ -56,9 +59,9 @@ def stats(x):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("csv")
-    ap.add_argument("--rtk-sigma", type=float, default=0.010, help="RTK horizontal 1-sigma (m)")
-    ap.add_argument("--rtk-sigma-v", type=float, default=0.020, help="RTK vertical 1-sigma (m)")
-    ap.add_argument("--rtk-tau", type=float, default=60.0, help="RTK error correlation time (s)")
+    ap.add_argument("--pos-sigma", type=float, default=0.030, help="position fix horizontal 1-sigma (m)")
+    ap.add_argument("--pos-sigma-v", type=float, default=0.045, help="position fix vertical 1-sigma (m)")
+    ap.add_argument("--pos-tau", type=float, default=0.5, help="position error correlation time (s)")
     ap.add_argument("--att-sigma-deg", type=float, default=0.2, help="attitude error (deg) -> lever-arm error")
     ap.add_argument("--seed", type=int, default=1)
     a = ap.parse_args()
@@ -72,11 +75,11 @@ def main():
     roll, pitch, yaw = d["roll_deg"][sel], d["pitch_deg"][sel], d["yaw_deg"][sel]
 
     rng = np.random.default_rng(a.seed)
-    # knowledge error on the range axis: RTK horizontal + attitude error x 1.25 m lever arm
+    # knowledge error on the range axis: horizontal position fix + attitude error x 1.25 m lever arm
     lever = 1.25
-    kx = gauss_markov(t, a.rtk_sigma, a.rtk_tau, rng) + \
+    kx = gauss_markov(t, a.pos_sigma, a.pos_tau, rng) + \
         lever * np.radians(gauss_markov(t, a.att_sigma_deg, 5.0, rng))
-    kz = gauss_markov(t, a.rtk_sigma_v, a.rtk_tau, rng)
+    kz = gauss_markov(t, a.pos_sigma_v, a.pos_tau, rng)
 
     print("=" * 76)
     print(f" Flight: {os.path.basename(a.csv)}   samples {sel.sum()}   duration {t[-1] - t[0]:.0f} s")
@@ -88,11 +91,11 @@ def main():
     print(f" attitude: roll rms {np.std(roll):.2f} deg, pitch mean {np.mean(pitch):+.2f} deg "
           f"(rms {np.std(pitch):.2f}), yaw std {np.std(np.unwrap(np.radians(yaw)))*57.3:.2f} deg")
     sk = stats(kx)
-    print(f" knowledge range axis (RTK {a.rtk_sigma*1000:.0f} mm, tau {a.rtk_tau:.0f} s, "
+    print(f" knowledge range axis (fix {a.pos_sigma*1000:.0f} mm, tau {a.pos_tau:g} s, "
           f"att {a.att_sigma_deg} deg)  rms {sk['rms']*1000:.1f} mm  p95 {sk['p95']*1000:.1f} mm")
 
     print("\n Phase error on the range axis (rms / p95), criterion lambda/50 = 7.2 deg")
-    print(f" {'band':10s} {'lambda/50':>9s} | {'planned grid':>22s} | {'logged RTK positions':>22s}")
+    print(f" {'band':10s} {'lambda/50':>9s} | {'planned grid':>22s} | {'logged UWB positions':>22s}")
     verdict = {}
     for name, f in BANDS.items():
         lam = 0.299792458 / f
@@ -131,7 +134,7 @@ def main():
         ax[1].legend(fontsize=7)
         tt = t - d["t"][0]
         ax[2].plot(tt, (ex - np.mean(ex)) * 1000, lw=0.8, label="tracking x, measurement phase (bias removed)")
-        ax[2].plot(tt, kx * 1000, lw=0.8, label="knowledge x (RTK model)")
+        ax[2].plot(tt, kx * 1000, lw=0.8, label="knowledge x (UWB model)")
         for name, f in BANDS.items():
             lam = 0.299792458 / f
             ax[2].axhline(lam / 50 * 1000, ls=":", lw=0.7, color="gray")

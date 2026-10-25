@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Stops Gazebo, ArduPilot SITL and MAVProxy started by run_sim.sh
-for p in arducopter sim_vehicle.py mavproxy.py "gz sim" "gz-sim" xterm; do
+# Stops Gazebo, ArduPilot SITL, MAVProxy and UWB positioning started by run_sim.sh
+for p in arducopter sim_vehicle.py mavproxy.py uwb_extnav.py "gz sim" "gz-sim" xterm; do
   pkill -f -- "$p" 2>/dev/null
 done
 sleep 1

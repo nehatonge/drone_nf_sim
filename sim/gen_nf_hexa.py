@@ -47,6 +47,8 @@ MOTOR_MASS = 0.37
 BATTERY = dict(mass=5.60, size=(0.25, 0.14, 0.11), z=-0.10)
 
 BOOM = dict(mass=0.45, x0=0.10, x1=1.20, z=-0.15, r=0.015)    # GFRP tube + coax
+# Down-facing rangefinder, offset sideways so the beam clears the battery, VNA and boom
+RANGEFINDER = dict(pos=(0.0, 0.12, -0.16), min=0.1, max=20.0, rate=20, topic="/nf/rangefinder")
 PROBE = dict(mass=0.80, x=1.25, z=-0.15, size=(0.15, 0.08, 0.05))  # WR-284 OEWG + adapter
 
 # ArduPilot Hexa-X: (motor number, angle deg clockwise from nose, spin)
@@ -188,6 +190,27 @@ def build(battery_x, name):
     </link>
     <joint name="imu_joint" type="fixed"><parent>base_link</parent><child>imu_link</child></joint>""")
 
+    # Rangefinder: single-beam lidar, pitched +90 deg so the beam points down
+    rf = RANGEFINDER
+    out.append(f"""    <link name="rangefinder_link">
+      <pose>{rf['pos'][0]:.4f} {rf['pos'][1]:.4f} {rf['pos'][2]:.4f} 0 1.5708 0</pose>
+      <inertial><mass>0.01</mass><inertia><ixx>1e-6</ixx><iyy>1e-6</iyy><izz>1e-6</izz><ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
+      <sensor name="rangefinder" type="gpu_lidar">
+        <topic>{rf['topic']}</topic>
+        <update_rate>{rf['rate']}</update_rate>
+        <always_on>1</always_on>
+        <lidar>
+          <scan>
+            <horizontal><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></horizontal>
+            <vertical><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></vertical>
+          </scan>
+          <range><min>{rf['min']}</min><max>{rf['max']}</max><resolution>0.01</resolution></range>
+          <noise><type>gaussian</type><mean>0</mean><stddev>0.01</stddev></noise>
+        </lidar>
+      </sensor>
+    </link>
+    <joint name="rangefinder_joint" type="fixed"><parent>base_link</parent><child>rangefinder_link</child></joint>""")
+
     # Boom and probe
     out.append(f"""    <link name="boom">
       <enable_wind>true</enable_wind>
@@ -262,7 +285,7 @@ def build(battery_x, name):
       <joint_name>rotor_{i}_joint</joint_name>
     </plugin>""")
 
-    out.append("""    <plugin name="ArduPilotPlugin" filename="ArduPilotPlugin">
+    out.append(f"""    <plugin name="ArduPilotPlugin" filename="ArduPilotPlugin">
       <fdm_addr>127.0.0.1</fdm_addr>
       <fdm_port_in>9002</fdm_port_in>
       <connectionTimeoutMaxCount>5</connectionTimeoutMaxCount>
@@ -270,7 +293,8 @@ def build(battery_x, name):
       <have_32_channels>0</have_32_channels>
       <modelXYZToAirplaneXForwardZDown degrees="true">0 0 0 180 0 0</modelXYZToAirplaneXForwardZDown>
       <gazeboXYZToNED degrees="true">0 0 0 180 0 90</gazeboXYZToNED>
-      <imuName>imu_link::imu_sensor</imuName>""")
+      <imuName>imu_link::imu_sensor</imuName>
+      <sensor><type>lidar</type><index>1</index><topic>{RANGEFINDER['topic']}</topic></sensor>""")
     for i, (num, ang, spin) in enumerate(MOTORS):
         sgn = 1 if spin == "CCW" else -1
         out.append(f"""      <control channel="{num - 1}">

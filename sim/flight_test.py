@@ -27,7 +27,7 @@ import time
 
 from pymavlink import mavutil
 
-WORLD = "nf_range"
+WORLD = "catr_lab"
 MODEL = os.environ.get("NF_MODEL", "nf_hexa")
 PROBE_OFFSET = (1.25, 0.0, -0.15)
 HOME_ENU = (6.0, 0.0, 0.40)        # spawn pose of the model origin
@@ -194,10 +194,11 @@ class Vehicle:
         print(f"heartbeat from sys {self.m.target_system}")
         self.m.mav.request_data_stream_send(self.m.target_system, self.m.target_component,
                                             mavutil.mavlink.MAV_DATA_STREAM_ALL, 10, 1)
-        threading.Thread(target=self._pump, daemon=True).start()
         self.armed = False
         self.mode_name = ""
         self.local_ned = None
+        self.texts = []
+        threading.Thread(target=self._pump, daemon=True).start()
 
     def _pump(self):
         """Keep reading MAVLink so the socket never backs up; print FC messages."""
@@ -209,7 +210,7 @@ class Vehicle:
             if t == "STATUSTEXT":
                 if "Rangefinder" not in msg.text:
                     print("  FC:", msg.text)
-                self.last_text = msg.text
+                self.texts.append(msg.text)
             elif t == "HEARTBEAT" and msg.get_srcSystem() == self.m.target_system:
                 self.armed = bool(msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
                 self.mode_name = mavutil.mode_string_v10(msg)
@@ -217,15 +218,14 @@ class Vehicle:
                 self.local_ned = (msg.x, msg.y, msg.z)
 
     def wait_ready(self, timeout=180):
-        print("waiting for EKF / GPS ...")
-        self.last_text = ""
+        print("waiting for EKF / UWB position ...")
         t0 = time.time()
         while time.time() - t0 < timeout:
-            if "using GPS" in getattr(self, "last_text", ""):
+            if any("using external nav" in t for t in self.texts):
                 time.sleep(5)
                 return
             time.sleep(0.2)
-        raise RuntimeError("EKF never started using GPS")
+        raise RuntimeError("EKF never started using external nav (is uwb_extnav.py running? see ~/nf_runs/uwb.log)")
 
     def calibrate_origin(self, truth, seconds=3.0):
         """Find where ArduPilot's local NED origin sits in the Gazebo world: true body

@@ -9,7 +9,7 @@ Checks, from the architecture report (Oct 2026):
   3. Propeller clearance for the chosen wheelbase and prop size
   4. Centre-of-gravity shift from the boom, and the counter-moment needed
   5. Hover flight time
-  6. Probe position tolerance per band vs. RTK-GNSS accuracy
+  6. Probe position tolerance per band vs. UWB positioning accuracy (indoor CATR lab)
   7. Scan-time for a planar raster at lambda/2 spacing (stop-and-go vs. on-the-fly)
 
 Every mass marked "EST" is an estimate - replace with datasheet values when the
@@ -42,7 +42,7 @@ COMPONENTS = [
     ("ESCs (6 channels)",              0.60, 0.00),   # EST
     ("Battery 12S 22 Ah",              5.60, 0.00),   # EST - position is the CG trim knob
     ("Cube Orange + carrier",          0.10, 0.00),
-    ("RTK-GNSS + compass + mast",      0.20, 0.00),   # EST
+    ("UWB tag + compass + mast",       0.20, 0.00),   # EST
     ("Telemetry radio",                0.05, 0.00),
     ("Jetson Orin Nano + case + BEC",  0.33, 0.00),   # EST
     ("Rangefinder + HereFlow",         0.07, 0.00),
@@ -58,8 +58,8 @@ AUW_TARGET_KG = 15.0        # implied by the report (6 x 2.5 kg at 50 %)
 
 # RF / scan
 BANDS_GHZ = {"L (1.5 GHz)": 1.5, "S (3 GHz)": 3.0, "C (5.5 GHz)": 5.5, "X (10 GHz)": 10.0}
-RTK_HORIZ_M = 0.010         # typical RTK fixed, 1-sigma horizontal
-RTK_VERT_M = 0.020          # typical RTK fixed, 1-sigma vertical
+POS_HORIZ_M = 0.030         # UWB fix, 1-sigma horizontal (sim/uwb_extnav.py with 5 cm range noise)
+POS_VERT_M = 0.045          # UWB fix, 1-sigma vertical
 SCAN_W_M, SCAN_H_M = 3.0, 3.0   # EST planar scan area (depends on AUT size + truncation angle)
 SCAN_SPEED_MPS = 0.5        # on-the-fly raster speed
 STOP_GO_S_PER_POINT = 3.0   # settle + measure per point if hovering at each sample
@@ -144,17 +144,17 @@ def main():
     print(f"    Hover power ~{p_hover:.0f} W, usable energy {e:.0f} Wh -> hover time ~{t_min:.0f} min")
 
     # 6. position tolerance
-    print("\n[6] Probe position tolerance vs RTK-GNSS")
-    print(f"    RTK (1-sigma): horizontal {RTK_HORIZ_M * 1000:.0f} mm, vertical {RTK_VERT_M * 1000:.0f} mm")
-    print(f"    {'band':12s} {'lambda':>8s} {'lam/50':>8s} {'lam/100':>8s} {'phase err @RTK':>16s}  verdict")
+    print("\n[6] Probe position tolerance vs UWB positioning")
+    print(f"    UWB (1-sigma): horizontal {POS_HORIZ_M * 1000:.0f} mm, vertical {POS_VERT_M * 1000:.0f} mm")
+    print(f"    {'band':12s} {'lambda':>8s} {'lam/50':>8s} {'lam/100':>8s} {'phase err @UWB':>16s}  verdict")
     for name, f in BANDS_GHZ.items():
         lam = 3e8 / (f * 1e9)
-        ph = 360 * RTK_HORIZ_M / lam
-        ok = RTK_HORIZ_M <= lam / 50
+        ph = 360 * POS_HORIZ_M / lam
+        ok = POS_HORIZ_M <= lam / 50
         print(f"    {name:12s} {lam * 1000:6.0f}mm {lam / 50 * 1000:6.1f}mm {lam / 100 * 1000:6.1f}mm "
               f"{ph:12.0f} deg    {status(ok)}")
     print("    Note: the range axis (normal to the scan plane) is horizontal for a vertical AUT,")
-    print("    so the horizontal RTK error drives the phase error. Hover-hold error from wind adds to this")
+    print("    so the horizontal position error drives the phase error. Hover-hold error adds to this")
     print("    and is what the Gazebo + ArduPilot SITL runs will measure.")
 
     # 7. scan time

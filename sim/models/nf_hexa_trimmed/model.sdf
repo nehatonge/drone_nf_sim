@@ -167,6 +167,24 @@
       </sensor>
     </link>
     <joint name="imu_joint" type="fixed"><parent>base_link</parent><child>imu_link</child></joint>
+    <link name="rangefinder_link">
+      <pose>0.0000 0.1200 -0.1600 0 1.5708 0</pose>
+      <inertial><mass>0.01</mass><inertia><ixx>1e-6</ixx><iyy>1e-6</iyy><izz>1e-6</izz><ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
+      <sensor name="rangefinder" type="gpu_lidar">
+        <topic>/nf/rangefinder</topic>
+        <update_rate>20</update_rate>
+        <always_on>1</always_on>
+        <lidar>
+          <scan>
+            <horizontal><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></horizontal>
+            <vertical><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></vertical>
+          </scan>
+          <range><min>0.1</min><max>20.0</max><resolution>0.01</resolution></range>
+          <noise><type>gaussian</type><mean>0</mean><stddev>0.01</stddev></noise>
+        </lidar>
+      </sensor>
+    </link>
+    <joint name="rangefinder_joint" type="fixed"><parent>base_link</parent><child>rangefinder_link</child></joint>
     <link name="boom">
       <enable_wind>true</enable_wind>
       <inertial>
@@ -449,6 +467,7 @@
       <modelXYZToAirplaneXForwardZDown degrees="true">0 0 0 180 0 0</modelXYZToAirplaneXForwardZDown>
       <gazeboXYZToNED degrees="true">0 0 0 180 0 90</gazeboXYZToNED>
       <imuName>imu_link::imu_sensor</imuName>
+      <sensor><type>lidar</type><index>1</index><topic>/nf/rangefinder</topic></sensor>
       <control channel="0">
         <jointName>rotor_0_joint</jointName>
         <useForce>1</useForce>

@@ -1,4 +1,4 @@
-# ArduCopter parameters for the near-field measurement hexacopter (SITL + Gazebo).
+# ArduCopter parameters for the near-field measurement hexacopter (SITL + Gazebo, CATR lab).
 # Starting point for a ~15.7 kg Hexa-X on 24 in props; values follow ArduPilot's
 # "initial tune" guidance for large props and are expected to be refined (AUTOTUNE).
 
@@ -48,16 +48,30 @@ WP_YAW_BEHAVIOR 0       # never change yaw during the mission
 LOIT_SPEED      100
 ANGLE_MAX       2500
 
-# --- sensors in the architecture
-# Down-facing rangefinder: on the real drone RNGFND1_TYPE is set for the chosen sensor.
-# Disabled here: ArduPilotPlugin (JSON) does not feed rangefinder data to SITL.
-RNGFND1_TYPE    0
+# --- sensors: indoor CATR lab, no GNSS
+GPS1_TYPE       0       # no GPS indoors
+# UWB position from uwb_extnav.py (VISION_POSITION_ESTIMATE on SERIAL1)
+VISO_TYPE       1       # MAVLink
+VISO_DELAY_MS   50      # UWB fix latency
+VISO_POS_M_NSE  0.05
+VISO_POS_X      -0.05   # UWB tag on the top-deck mast, body FRD (catr_layout.UWB_TAG_OFFSET)
+VISO_POS_Y      0
+VISO_POS_Z      -0.31
+# Down-facing rangefinder: Gazebo lidar on the model -> ArduPilotPlugin rng_1 -> SITL
+# (the real build sets the chosen sensor's type). Over the floor absorber it reads the
+# pyramid tips and valleys, so it is not used for height.
+RNGFND1_TYPE    100
+RNGFND1_ORIENT  25      # down
+RNGFND1_MIN_CM  10
+RNGFND1_MAX_CM  2000
+RNGFND1_GNDCLEAR 23     # reading on the ground (sensor 0.23 m above the floor)
 SIM_FLOW_ENABLE 1
-FLOW_TYPE       10      # SITL optical flow (stands in for HereFlow)
-EK3_SRC1_POSXY  3       # GPS (RTK on the real build)
-EK3_SRC1_VELXY  3
-EK3_SRC1_POSZ   1       # baro
-SIM_GPS_HZ      10      # RTK receivers typically 5-20 Hz
+FLOW_TYPE       10      # SITL optical flow (stands in for HereFlow), not fused yet
+EK3_SRC1_POSXY  6       # ExternalNav (UWB)
+EK3_SRC1_VELXY  0
+EK3_SRC1_POSZ   6       # ExternalNav (UWB): rangefinder is unusable over pyramidal floor absorber
+EK3_SRC1_VELZ   0
+EK3_SRC1_YAW    1       # compass
 
 # --- battery: 12S 22 Ah
 BATT_CAPACITY   22000
