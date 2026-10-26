@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Launch Gazebo (CATR lab world) + ArduPilot SITL + UWB positioning for the near-field hexacopter.
 #
-#   ./run_sim.sh [--model nf_hexa|nf_hexa_trimmed] [--wind MPS] [--gust MPS] [--headless]
+#   ./run_sim.sh [--model nf_hexa|nf_hexa_trimmed|nf_hexa_down] [--wind MPS] [--gust MPS] [--headless] [--batch]
 #                [--params FILE] [--uwb "ARGS"]     e.g. --uwb "--range-sigma 0.10 --nlos-prob 0.05"
 #
 # Gazebo and uwb_extnav.py run in the background; SITL (MAVProxy console) in the foreground.
@@ -23,7 +23,7 @@ while [[ $# -gt 0 ]]; do
     --wind) WIND="$2"; shift 2 ;;
     --gust) GUST="$2"; shift 2 ;;
     --headless) HEADLESS=1; shift ;;
-    --batch) HEADLESS=1; BATCH=1; shift ;;
+    --batch) BATCH=1; shift ;;         # no MAVProxy; scripts connect on tcp:5760 (add --headless for no Gazebo window)
     --params) PARAM_ARGS+=("--add-param-file=$(realpath "$2")"); shift 2 ;;
     --uwb) UWB_ARGS="$2"; shift 2 ;;
     *) echo "unknown arg $1"; exit 1 ;;

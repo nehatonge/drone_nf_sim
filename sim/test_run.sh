@@ -17,7 +17,7 @@ source /opt/ros/jazzy/setup.bash
 source "$HOME/venv-ardupilot/bin/activate"
 
 "$HERE/stop_sim.sh" >/dev/null
-"$HERE/run_sim.sh" --batch "${SIM_ARGS[@]}" > "$HOME/nf_runs/sim_console.log" 2>&1 &
+"$HERE/run_sim.sh" --batch --headless "${SIM_ARGS[@]}" > "$HOME/nf_runs/sim_console.log" 2>&1 &
 sleep 12
 export NF_MODEL="$MODEL"
 OUT=$(python3 -u "$HERE/flight_test.py" "$@" 2>&1 | tee /dev/stderr | grep RESULT_CSV | awk '{print $2}')
