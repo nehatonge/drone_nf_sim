@@ -147,6 +147,8 @@ analysis/
   analyze_flight.py    tracking/knowledge error and phase error per band, plots
 ```
 
+**Step-by-step run guide and troubleshooting: [docs/RUNNING.md](docs/RUNNING.md).**
+
 ## Setup (once)
 
 In WSL Ubuntu 24.04, with ArduPilot cloned to `~/ardupilot` and `ardupilot_gazebo`
