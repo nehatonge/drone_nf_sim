@@ -59,9 +59,12 @@ python3 sim/em_selftest.py            # EM model vs analytical pattern: must pri
 
 There are three ways, from simplest to most hands-on.
 
-### A. Automatic test run (no window)
+### A. Automatic test run (no window unless `--gui`)
 
-Starts everything, flies, analyses, stops. Best for repeatable tests.
+Starts everything, flies, analyses, stops. Best for repeatable tests. Gazebo runs
+without a window; add `--gui` before `--` to see it
+(`./sim/test_run.sh --gui --model nf_hexa_down -- grid --max-points 10`), or attach a
+window to a running test from another terminal with `gz sim -g`.
 
 ```bash
 cd /mnt/c/Users/nehat/drone_nf_sim
@@ -168,7 +171,8 @@ Start with `./sim/stop_sim.sh` — most odd behaviour comes from a previous run 
 going in the background.
 
 ### The Gazebo window does not appear
-- `--headless` (and `test_run.sh`) run Gazebo without a window on purpose.
+- `--headless` and `test_run.sh` run Gazebo without a window on purpose; use
+  `./sim/test_run.sh --gui ...` to get one.
 - Attach a window to a running simulation from another terminal: `gz sim -g`
 - Check `~/nf_runs/gz.log` for errors.
 - Graphics: `~/.bashrc` sets `GALLIUM_DRIVER=d3d12` and
