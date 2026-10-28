@@ -7,6 +7,7 @@ venv*/
 nf_runs/
 *.csv
 *.png
+!sim/models/**/*.png
 *.bin
 *.BIN
 *.tlog
