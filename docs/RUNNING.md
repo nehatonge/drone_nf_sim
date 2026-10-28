@@ -68,9 +68,16 @@ window to a running test from another terminal with `gz sim -g`.
 
 ```bash
 cd /mnt/c/Users/nehat/drone_nf_sim
-./sim/test_run.sh --model nf_hexa_down -- grid --max-points 10     # 10 grid points, ~4 min
-./sim/test_run.sh --model nf_hexa_down -- grid                     # full grid, ~7 h
-./sim/test_run.sh --model nf_hexa_down -- grid --resume 1          # continue scan 1
+# planar near-field scan of the 5 GHz AUT (camera alignment + VNA trigger handshake)
+./sim/test_run.sh --model nf_hexa_trimmed -- nfscan --max-points 10   # 10 trigger points, ~5 min
+./sim/test_run.sh --model nf_hexa_trimmed -- nfscan                   # all 441 points, ~1.5 h
+./sim/test_run.sh --model nf_hexa_trimmed -- nfscan --resume 2        # continue scan 2
+
+# another antenna frequency: take-off point and sweep follow it
+./sim/test_run.sh --model nf_hexa_trimmed --aut-ghz 3 -- nfscan --aut-ghz 3 --max-points 10
+
+# path-following grid with the downward probe (earlier test)
+./sim/test_run.sh --model nf_hexa_down -- grid --max-points 10
 ./sim/test_run.sh --model nf_hexa_trimmed -- hold --hold 30        # hover stability only
 ```
 
@@ -82,7 +89,8 @@ Everything after `--` goes to `flight_test.py`; see `python3 sim/flight_test.py 
 
 ```bash
 cd /mnt/c/Users/nehat/drone_nf_sim
-./sim/run_sim.sh --batch --model nf_hexa_down
+./sim/run_sim.sh --batch --model nf_hexa_trimmed            # near-field scan (probe forward)
+# or: ./sim/run_sim.sh --batch --model nf_hexa_down         # path-following grid (probe down)
 ```
 
 Wait until the Gazebo window shows the lab (10-20 s). To find the drone: in the Entity
@@ -93,7 +101,8 @@ Tree on the right, right-click `nf_hexa_down` → **Move to**.
 ```bash
 cd /mnt/c/Users/nehat/drone_nf_sim
 source ~/venv-ardupilot/bin/activate
-NF_MODEL=nf_hexa_down python3 sim/flight_test.py grid --max-points 10
+NF_MODEL=nf_hexa_trimmed python3 sim/flight_test.py nfscan --max-points 10
+# or: NF_MODEL=nf_hexa_down python3 sim/flight_test.py grid --max-points 10
 ```
 
 `NF_MODEL` must match `--model` in terminal 1. When finished, in either terminal:
@@ -125,8 +134,10 @@ mode land
 
 | What | Where |
 |---|---|
-| Grid scans (SQLite) | `data/nf_scans.db` — Windows: `C:\Users\nehat\drone_nf_sim\data\nf_scans.db`, open with [DB Browser for SQLite](https://sqlitebrowser.org/) |
-| Scan summary | `python3 sim/scan_db.py` (all scans), `python3 sim/scan_db.py 1` (points of scan 1) |
+| Scans, points, triggers, events, telemetry (SQLite) | `data/nf_scans.db` — Windows: `C:\Users\nehat\drone_nf_sim\data\nf_scans.db`, open with [DB Browser for SQLite](https://sqlitebrowser.org/) |
+| Summary | `python3 sim/scan_db.py` (scans and flights), `python3 sim/scan_db.py 1` (points of scan 1), `python3 sim/scan_db.py triggers 1` (every trigger attempt of flight 1) |
+| All log files of a flight | `data/flights/<flight_id>/` (ArduPilot `.BIN`, CSV, plot, UWB / Gazebo / console logs) |
+| Camera image check | `cd sim && NF_MODEL=nf_hexa_trimmed python3 marker_detect.py` (while a sim runs) → `~/nf_runs/camera.png` |
 | Flight CSV + plot | `~/nf_runs/` — Windows: `\\wsl$\Ubuntu-24.04\home\neha\nf_runs` |
 | UWB fix error | `~/nf_runs/uwb.log` (printed every 10 s) |
 | Gazebo log | `~/nf_runs/gz.log` |
@@ -222,6 +233,23 @@ UWB positioning is not reaching ArduPilot.
 - The pitch gains are scaled to the boom's pitch inertia. If you change the probe, boom
   or battery position, the gains may need adjusting (`ATC_RAT_PIT_*`).
 - Look at desired vs actual attitude in the newest `~/nf_runs/logs/*.BIN` (`ATT`, `RATE`).
+
+### "AUT marker not found"
+The camera never saw the ArUco marker, even after turning a full circle.
+- Use the nf_hexa models generated after the camera was added (`gz topic -l` must show
+  `/nf/camera`); regenerate them if not (section 5).
+- Regenerate the lab (`python3 sim/gen_catr_lab.py`): it writes the marker texture
+  `sim/models/catr_lab/materials/textures/aut_marker.png`.
+- Look at what the camera sees: `marker_detect.py` saves `~/nf_runs/camera.png`.
+- `--search-alt` sets the height the drone looks from (default 3.5 m).
+
+### "point N failed 5 times - scan M stopped"
+Five triggers in a row failed at one point. `python3 sim/scan_db.py triggers <flight_id>`
+shows why (`not_stable`, `missed_trigger`, `sweep_timeout`, `moved_during_sweep`,
+`bad_data`, `vna_not_ready`). In simulation the VNA faults come from
+`--vna-miss-prob`, `--vna-hang-prob`, `--vna-bad-prob` (set them to 0 for a fault-free
+run); many `not_stable` means the drone cannot hold 2 cm (`--trigger-tol`). Continue with
+`--resume M`.
 
 ### "vehicle disarmed during ... (crash?) - scan N stopped"
 The grid script stopped so no point is saved from the floor. Fix the cause, then

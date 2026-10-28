@@ -3,6 +3,9 @@
 #
 #   ./run_sim.sh [--model nf_hexa|nf_hexa_trimmed|nf_hexa_down] [--wind MPS] [--gust MPS] [--headless] [--batch]
 #                [--params FILE] [--uwb "ARGS"]     e.g. --uwb "--range-sigma 0.10 --nlos-prob 0.05"
+#                [--aut-ghz F] [--n-lambda N] [--spawn "X Y"]
+#   The take-off point is computed from the antenna frequency (catr_layout.takeoff_point:
+#   scan distance N*lambda + probe offset, limited to the flat floor) unless --spawn is given.
 #
 # Gazebo and uwb_extnav.py run in the background; SITL (MAVProxy console) in the foreground.
 # --wind/--gust stand in for air drafts (HVAC, downwash recirculation) in the lab.
@@ -16,6 +19,9 @@ GUST=0
 HEADLESS=0
 BATCH=0
 UWB_ARGS=""
+AUT_GHZ=5.0
+N_LAMBDA=5
+SPAWN=""
 PARAM_ARGS=("--add-param-file=$HERE/params/nf_hexa.parm")
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -26,6 +32,9 @@ while [[ $# -gt 0 ]]; do
     --batch) BATCH=1; shift ;;         # no MAVProxy; scripts connect on tcp:5760 (add --headless for no Gazebo window)
     --params) PARAM_ARGS+=("--add-param-file=$(realpath "$2")"); shift 2 ;;
     --uwb) UWB_ARGS="$2"; shift 2 ;;
+    --aut-ghz) AUT_GHZ="$2"; shift 2 ;;
+    --n-lambda) N_LAMBDA="$2"; shift 2 ;;
+    --spawn) SPAWN="$2"; shift 2 ;;
     *) echo "unknown arg $1"; exit 1 ;;
   esac
 done
@@ -64,13 +73,16 @@ if [[ "$WIND" != "0" || "$GUST" != "0" ]]; then
       </vertical>
     </plugin>"
 fi
-python3 - "$HERE/worlds/catr_lab.sdf" "$WORLD" "$MODEL" "$WIND_XML" <<'EOF'
+[[ -z "$SPAWN" ]] && SPAWN=$(cd "$HERE" && python3 catr_layout.py "$AUT_GHZ" "$N_LAMBDA")
+read -r SPAWN_X SPAWN_Y <<< "$SPAWN"
+python3 - "$HERE/worlds/catr_lab.sdf" "$WORLD" "$MODEL" "$WIND_XML" "$SPAWN_X" "$SPAWN_Y" <<'EOF'
 import sys
-src, dst, model, wind = sys.argv[1:5]
+src, dst, model, wind, sx, sy = sys.argv[1:7]
 s = open(src).read().replace("MODEL_NAME", model).replace("<!--WIND_PLUGIN-->", wind)
+s = s.replace("SPAWN_X", sx).replace("SPAWN_Y", sy)
 open(dst, "w").write(s)
 EOF
-echo "world: $WORLD  model: $MODEL  wind: $WIND m/s  gust: $GUST m/s"
+echo "world: $WORLD  model: $MODEL  take-off: ($SPAWN_X, $SPAWN_Y)  wind: $WIND m/s  gust: $GUST m/s"
 
 source /opt/ros/jazzy/setup.bash 2>/dev/null || true
 

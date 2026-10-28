@@ -49,6 +49,8 @@ BATTERY = dict(mass=5.60, size=(0.25, 0.14, 0.11), z=-0.10)
 BOOM = dict(mass=0.45, x0=0.10, x1=1.20, z=-0.15, r=0.015)    # GFRP tube + coax
 # Down-facing rangefinder, offset sideways so the beam clears the battery, VNA and boom
 RANGEFINDER = dict(pos=(0.0, 0.12, -0.16), min=0.1, max=20.0, rate=20, topic="/nf/rangefinder")
+# Forward camera at the front of the frame, above the boom, for finding the AUT marker
+CAMERA = dict(pos=(0.20, 0.0, 0.0), hfov=1.2, width=640, height=480, rate=10, topic="/nf/camera")
 # OEWG probe + adapter at the boom tip. "forward": aperture faces the AUT (planar NF scan);
 # "down": aperture faces the floor, link origin at the aperture centre (path-following test)
 PROBE = dict(mass=0.80, x=1.25, z=-0.15, size=(0.15, 0.08, 0.05))
@@ -218,6 +220,28 @@ def build(battery_x, name, probe="forward"):
       </sensor>
     </link>
     <joint name="rangefinder_joint" type="fixed"><parent>base_link</parent><child>rangefinder_link</child></joint>""")
+
+    cam = CAMERA
+    out.append(f"""    <link name="camera_link">
+      <pose>{cam['pos'][0]:.4f} {cam['pos'][1]:.4f} {cam['pos'][2]:.4f} 0 0 0</pose>
+      <inertial><mass>0.02</mass><inertia><ixx>1e-6</ixx><iyy>1e-6</iyy><izz>1e-6</izz><ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
+      <visual name="camera_visual">
+        <pose>-0.02 0 0 0 0 0</pose>
+        <geometry><box><size>0.03 0.05 0.03</size></box></geometry>
+        <material><ambient>0.1 0.1 0.1 1</ambient><diffuse>0.1 0.1 0.1 1</diffuse></material>
+      </visual>
+      <sensor name="camera" type="camera">
+        <topic>{cam['topic']}</topic>
+        <update_rate>{cam['rate']}</update_rate>
+        <always_on>1</always_on>
+        <camera>
+          <horizontal_fov>{cam['hfov']}</horizontal_fov>
+          <image><width>{cam['width']}</width><height>{cam['height']}</height><format>R8G8B8</format></image>
+          <clip><near>0.05</near><far>60</far></clip>
+        </camera>
+      </sensor>
+    </link>
+    <joint name="camera_joint" type="fixed"><parent>base_link</parent><child>camera_link</child></joint>""")
 
     # Boom and probe
     out.append(f"""    <link name="boom">

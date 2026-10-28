@@ -97,9 +97,11 @@ class NearFieldModel:
         p0 = aut.c + ref_dist * aut.n
         self.ref = np.abs(self._raw(p0[None], -aut.n[None], aut.e[None]))[0]     # (F,)
 
-    def _raw(self, p, pn, pe):
-        """p, pn, pe: (M, 3) probe aperture centre, normal, E direction -> V (M, F)."""
-        out = np.empty((len(p), len(self.f)), dtype=complex)
+    def _raw(self, p, pn, pe, idx=None):
+        """p, pn, pe: (M, 3) probe aperture centre, normal, E direction -> V (M, F),
+        or (M, len(idx)) for the frequency indices idx."""
+        idx = range(len(self.f)) if idx is None else idx
+        out = np.empty((len(p), len(idx)), dtype=complex)
         for m in range(len(p)):
             n_p = _unit(pn[m])
             e_p = _unit(pe[m] - np.dot(pe[m], n_p) * n_p)
@@ -108,15 +110,18 @@ class NearFieldModel:
             u = d / R[:, None]
             obl = (1 + u @ self.aut.n) / 2
             pol = np.sum(self.aut.copol(u) * self.probe.copol(-u, n_p, e_p), axis=1)
-            for i, k in enumerate(self.k):
+            for j, i in enumerate(idx):
+                k = self.k[i]
                 fp = self.probe.pattern(-u, k, n_p, e_p)
-                out[m, i] = 1j * k / (4 * np.pi) * np.sum(self.w * np.exp(-1j * k * R) / R * obl * fp * pol)
+                out[m, j] = 1j * k / (4 * np.pi) * np.sum(self.w * np.exp(-1j * k * R) / R * obl * fp * pol)
         return out
 
-    def measure(self, p, pn, pe, noisy=True):
-        """S21 (M, F), normalised to the boresight reference at ref_dist (0 dB there)."""
+    def measure(self, p, pn, pe, noisy=True, freq_index=None):
+        """S21 (M, F), normalised to the boresight reference at ref_dist (0 dB there);
+        (M, 1) for one frequency with freq_index (a VNA sweeping point by point)."""
         p, pn, pe = (np.atleast_2d(np.asarray(x, dtype=float)) for x in (p, pn, pe))
-        s = self._raw(p, pn, pe) / self.ref
+        idx = None if freq_index is None else [freq_index]
+        s = self._raw(p, pn, pe, idx) / (self.ref if idx is None else self.ref[idx])
         if noisy and self.noise > 0:
             s += self.noise / np.sqrt(2) * (self.rng.standard_normal(s.shape) + 1j * self.rng.standard_normal(s.shape))
         return s

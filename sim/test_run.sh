@@ -23,8 +23,17 @@ source "$HOME/venv-ardupilot/bin/activate"
 "$HERE/run_sim.sh" --batch $HEADLESS_ARG "${SIM_ARGS[@]}" > "$HOME/nf_runs/sim_console.log" 2>&1 &
 sleep 12
 export NF_MODEL="$MODEL"
-OUT=$(python3 -u "$HERE/flight_test.py" "$@" 2>&1 | tee /dev/stderr | grep RESULT_CSV | awk '{print $2}')
+LOG="$HOME/nf_runs/flight_test.log"
+python3 -u "$HERE/flight_test.py" "$@" 2>&1 | tee "$LOG"
 "$HERE/stop_sim.sh" >/dev/null
+OUT=$(grep RESULT_CSV "$LOG" | tail -1 | awk '{print $2}')
+FID=$(grep FLIGHT_ID "$LOG" | head -1 | awk '{print $2}')
+DB=$(grep FLIGHT_ID "$LOG" | head -1 | awk '{print $4}')       # "FLIGHT_ID <id> -> <database>"
 if [[ -n "$OUT" ]]; then
   python3 "$HERE/../analysis/analyze_flight.py" "$OUT" 2>/dev/null
+  PNG="${OUT%.csv}.png"
+  if [[ -n "$FID" ]]; then
+    [[ -f "$PNG" ]] && python3 "$HERE/scan_db.py" --db "$DB" attach "$FID" flight_plot "$PNG" >/dev/null
+    python3 "$HERE/scan_db.py" --db "$DB" attach "$FID" flight_test_log "$LOG" >/dev/null
+  fi
 fi

@@ -16,6 +16,7 @@ eeprom.bin
 scan_path.json
 data/*.db
 data/*.db-journal
+data/flights/
 
 .vscode/
 .idea/

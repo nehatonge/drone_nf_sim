@@ -36,8 +36,40 @@ FEED_POS = (-5.0, 0.0, 1.8)
 AUT_SIZE = (1.0, 1.0)             # aperture width (y), height (z)
 AUT_POSITIONER_X = -0.6
 
-# Drone spawn: flat floor, facing the AUT
+# ArUco marker on a plate just above the aperture, in the aperture plane, for the
+# drone camera to find and align to the AUT. The aperture centre is MARKER_ABOVE
+# metres below the marker centre.
+MARKER_DICT = "DICT_4X4_50"
+MARKER_ID = 0
+MARKER_SIZE = 0.50                # black square side (m)
+MARKER_PLATE = 0.60               # white plate side (m)
+MARKER_ABOVE = AUT_SIZE[1] / 2 + 0.10 + MARKER_PLATE / 2
+MARKER_CENTRE = (0.004, 0.0, QZ_CENTRE[2] + MARKER_ABOVE)
+
+# Drone default spawn: flat floor, facing the AUT (run_sim.sh normally computes it
+# from the antenna frequency with takeoff_point())
 SPAWN = (6.0, 0.0)
+PROBE_AHEAD = 1.325               # probe aperture ahead of the drone centre (gen_nf_hexa.py, forward probe)
+# the probe hangs 0.25 m above the floor at take-off, so it must be over the flat floor
+MIN_TAKEOFF_X = FLOOR_ABS_X[1] + PROBE_AHEAD + 0.2
+
+
+def scan_distance(freq_ghz, n_lambda=5.0):
+    """Probe-to-aperture distance for a planar near-field scan: n_lambda wavelengths."""
+    return n_lambda * 0.299792458 / freq_ghz
+
+
+def takeoff_point(freq_ghz, n_lambda=5.0):
+    """Take-off point on the AUT boresight: straight behind the drone's scan position
+    (scan distance + probe offset), but never closer than the flat floor allows."""
+    x = QZ_CENTRE[0] + scan_distance(freq_ghz, n_lambda) + PROBE_AHEAD
+    return (round(max(x, MIN_TAKEOFF_X), 3), QZ_CENTRE[1])
+
+
+if __name__ == "__main__":
+    import sys
+    print(*takeoff_point(float(sys.argv[1]) if len(sys.argv) > 1 else 5.0,
+                         float(sys.argv[2]) if len(sys.argv) > 2 else 5.0))
 
 # UWB anchors (x, y, z): on poles just inside the absorber so the absorber does not
 # block them, 4 low + 4 high around the scan volume for a good vertical geometry (EST)

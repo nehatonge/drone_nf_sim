@@ -29,7 +29,8 @@ until the real lab drawing is available.
 | Quiet zone | 3 m sphere centred on the AUT (transparent green) |
 | AUT | 1 × 1 m aperture at height 4 m in the x = 0 plane, on a roll-over-azimuth positioner, turned to face +x for the drone scan (it faces the reflector for the CATR reference measurement) |
 | UWB anchors | 8 on poles just inside the absorber, 4 at 1.2 m and 4 at 8.5 m |
-| Take-off pad | flat floor at (6, 0), drone facing the AUT |
+| Take-off pad | flat floor on the AUT boresight, placed from the antenna frequency (x = 5.03 m at 5 GHz), drone facing the AUT |
+| AUT marker | 0.5 m ArUco marker (DICT_4X4_50, id 0) on a plate 0.9 m above the aperture centre |
 
 Absorber is visual geometry: Gazebo does not simulate RF. Flat collision boxes at the
 absorber tips stop a drone that drifts into a wall.
@@ -46,16 +47,17 @@ Numbers match Table 1 / Figure 3 of the report.
 | 4 | ESC (6 channels) | Implicit: ArduPilotPlugin maps PWM 1100–1900 µs to rotor speed | model plugin block |
 | 5 | Battery 12S 22 Ah | 5.6 kg mass, position is the CG trim (`--battery-x`); `BATT_CAPACITY` | generator, `params/nf_hexa.parm` |
 | 6 | Cube Orange | ArduCopter SITL (Hexa-X, `FRAME_CLASS 2`, `FRAME_TYPE 1`) + 1 kHz IMU sensor | `sim/run_sim.sh`, `imu_link` |
-| 7 | Jetson Orin Nano | Played by `flight_test.py`: commands GUIDED setpoints over MAVLink and logs the probe pose. Not yet a ROS 2 node. | `sim/flight_test.py` |
+| 7 | Jetson Orin Nano | Played by `flight_test.py`: commands GUIDED setpoints over MAVLink, finds the AUT with the camera, runs the VNA trigger handshake, logs everything to SQLite. Not yet a ROS 2 node. | `sim/flight_test.py` |
+| — | Forward camera | 640 × 480, 69° FOV, 10 Hz at the front of the frame (`/nf/camera`); ArUco marker detection and pose with OpenCV | `sim/gen_nf_hexa.py`, `sim/marker_detect.py` |
 | 8 | RTK-GNSS + compass | **Indoors: UWB tag on the mast** + compass. `uwb_extnav.py` turns true tag position into noisy anchor ranges, solves the position and sends it as external navigation (`EK3_SRC1_POSXY/POSZ 6`). GPS off. | `sim/uwb_extnav.py`, `params/nf_hexa.parm` |
 | 9 | Telemetry radio | MAVLink over UDP 14550 (MAVProxy) / TCP 5760 (scripts); UWB on TCP 5762 | `sim/run_sim.sh` |
 | 10 | Rangefinder (down) | Single-beam Gazebo lidar → ArduPilotPlugin → `RNGFND1_TYPE 100`. Logged, not used for height: over pyramidal floor absorber it reads tips and valleys. | `sim/gen_nf_hexa.py` |
 | 11 | HereFlow optical flow | SITL optical flow (`FLOW_TYPE 10`), fused for velocity (`EK3_SRC1_VELXY 5`) | `params/nf_hexa.parm` |
-| 12 | VNA / RF receiver | 0.40 kg mass + S21 sweep from the EM model (4.8–5.2 GHz, 21 points, 1 sweep/s) at the true probe pose | `sim/em_model.py` |
+| 12 | VNA / RF receiver | Simulated LibreVNA-class VNA with TRIGGER / READY handshake lines; each sweep measures 21 frequencies one after another at the probe pose of that instant (EM model); injectable faults | `sim/vna_sim.py`, `sim/em_model.py` |
 | 13 | Probe mount | Mass only (0.20 kg) | `sim/gen_nf_hexa.py` |
 | 14 | Probe boom + coax | `boom` link, GFRP tube 0.10–1.20 m forward, 0.45 kg | `sim/gen_nf_hexa.py` |
 | 15 | Waveguide probe | `probe` link at the boom tip, 0.8 kg. Forward-facing (`nf_hexa`, `nf_hexa_trimmed`) or downward-facing (`nf_hexa_down`). RF: open-ended WR-187 (3.95–5.85 GHz) | `sim/gen_nf_hexa.py`, `sim/em_model.py` |
-| G | AUT + RF source | AUT on the CATR positioner in the quiet zone | `sim/gen_catr_lab.py` |
+| G | AUT + RF source | AUT on the CATR positioner in the quiet zone, ArUco marker plate above the aperture | `sim/gen_catr_lab.py` |
 | G | CATR reflector + feed | Reference far-field measurement of the AUT | `sim/gen_catr_lab.py` |
 | G | UWB anchors (replace RTK base) | 8 anchors, positions in `catr_layout.py` | `sim/gen_catr_lab.py` |
 | G | 10 MHz reference | Not modelled | — |
@@ -75,6 +77,54 @@ when the parts are chosen, then regenerate the model.
 | 5 | EM near-field model at logged poses | `sim/em_model.py`: 5 GHz 1 × 1 m AUT, WR-187 probe; checked by `sim/em_selftest.py` |
 | 6 | NF-FF transformation (probe correction, plane-wave spectrum) | To do |
 | 7 | Far-field pattern + error metrics | Position/phase-error verdict per band in `analyze_flight.py`; comparison with the CATR reference pattern to do |
+
+## Planar near-field scan (`nfscan`)
+
+The measurement mission. `flight_test.py nfscan`:
+
+1. **Take-off point from the antenna frequency** (`catr_layout.takeoff_point`): straight
+   behind the scan position on the AUT boresight (scan distance n·λ + probe offset), but
+   never closer than x = 5.03 m, where the probe still hangs over the flat floor. At
+   5 GHz: scan distance 5λ = 30 cm, take-off at x = 5.03 m. `run_sim.sh` places the drone
+   there (`--aut-ghz`, `--n-lambda`, or `--spawn "X Y"`).
+2. **Find the AUT** with the forward camera: ArUco marker above the aperture, pose by
+   `solvePnP`, converted to the world with the drone's own pose estimate. If the marker is
+   not in view, the drone turns in 30° steps.
+3. **Align**: fly to a stand-off point 1 m beyond the scan plane, square to the AUT at its
+   centre height; look again from there (more accurate), then approach the scan plane and
+   **lock the height**. In simulation the AUT is found to ~11 mm and < 0.1°.
+4. **Serpentine 2 × 2 m grid** on the plane parallel to the aperture, trigger points every
+   10 cm (21 × 21 = 441): from the grid centre to the **bottom-right** corner (seen from the
+   drone), right → left, step up, left → right, … to the top row.
+5. **At every trigger point** (closed loop, feedback before and after):
+   - before: probe within **2 cm** of the point for **1 s** (drone's own estimate) and the
+     VNA idle (READY high)
+   - TRIGGER high → VNA acknowledges (READY low) → sweep → READY high → read → TRIGGER low
+   - after: acknowledge received, sweep finished in time, probe stayed within 2 cm during
+     the sweep, data valid
+   - any failure (`not_stable`, `vna_not_ready`, `missed_trigger`, `sweep_timeout`,
+     `moved_during_sweep`, `bad_data`): **back to the same point and trigger again**; never
+     on to the next point until it succeeds. After 5 failed attempts the scan stops
+     (resume with `--resume`).
+   - hover the rest of the **10 s**, then save the point.
+6. Back to the grid centre, retreat, return to the pad, land.
+
+About 441 × ~12.5 s ≈ 1.5 h for the full grid. 10 cm is 1.7 λ at 5 GHz: right for
+testing path and trigger logic; a far-field reconstruction needs ≤ λ/2 = 3 cm
+(`--nf-spacing 0.03`).
+
+### VNA: LibreVNA (simulated)
+
+Chosen for the drone: 100 kHz – 6 GHz (covers the 5 GHz AUT and L/S/C), small and
+USB-powered from the Jetson, 10 MHz reference in/out (shared-reference phase coherence,
+report section 4), two ports (port 2 can be the reference channel), open source with SCPI
+control, low cost. Trade-offs: lower dynamic range than a benchtop VNA, and the trigger
+handshake goes over USB/SCPI; if a hard 5 V TTL trigger line is required, a Copper Mountain
+compact USB VNA is the step up. `vna_sim.py` models generic TRIGGER / READY lines, so the
+flight logic works with either. Check the datasheet figures before buying.
+
+On the real drone, the Jetson Orin Nano's GPIO is **3.3 V and not 5 V tolerant**: use a
+level shifter for any 5 V TTL trigger lines.
 
 ## Grid scan (stop-and-go)
 
@@ -102,8 +152,16 @@ open with DB Browser for SQLite):
 | Table | One row per | Main columns |
 |---|---|---|
 | `scans` | scan | start time, model, probe, frequency sweep, spacing, hold time, grid and settings (JSON) |
-| `points` | grid point | target, estimated (EKF) and true (Gazebo) probe position with std over the hold, arrived, timing |
-| `measurements` | point × frequency | S21 (re, im), amplitude dB, phase deg, and their std over the sweeps |
+| `points` | grid point (once measured) | target, estimated (EKF) and true (Gazebo) probe position with std over the hold, grid offsets, attempts, flight |
+| `measurements` | point × frequency | S21 (re, im), amplitude dB, phase deg (and std over sweeps for `grid`) |
+| `flights` | flight | test, take-off point, AUT detection and its error vs truth, outcome, trigger counts, log folder |
+| `triggers` | trigger attempt | handshake times (trigger, ack, done), position error before / during the sweep, result |
+| `events` | event | take-off, detection, alignment, height lock, retries, landing, errors |
+| `telemetry` | 0.1 s of flight | true and reference probe position, attitude, phase of the mission |
+| `files` | archived log | ArduPilot `.BIN`, flight CSV and plot, UWB / Gazebo / console logs in `data/flights/<flight_id>/` |
+
+`python3 sim/scan_db.py` lists scans and flights; `python3 sim/scan_db.py triggers <flight_id>`
+lists every trigger attempt.
 
 Amplitudes are relative to the probe facing the AUT on boresight at 1 m (0 dB).
 
@@ -129,7 +187,9 @@ sim/
   catr_layout.py       CATR lab dimensions, reflector, feed, AUT, UWB anchors (edit here)
   em_model.py          EM model: AUT aperture -> probe S21 over a frequency sweep
   em_selftest.py       checks the EM model against the analytical far-field pattern
-  scan_db.py           SQLite store for grid scans; run it to list scans and points
+  scan_db.py           SQLite store: scans, points, triggers, events, telemetry, flight logs
+  vna_sim.py           simulated VNA with TRIGGER / READY handshake and fault injection
+  marker_detect.py     camera + ArUco: finds the AUT centre and facing direction
   gen_catr_lab.py      generates the lab model (absorber meshes) and worlds/catr_lab.sdf
   gen_nf_hexa.py       generates the hexacopter SDF from the component list
   models/              generated: catr_lab, nf_hexa (as built), nf_hexa_trimmed (battery 24 cm aft),
@@ -178,6 +238,12 @@ python3 sim/gen_nf_hexa.py --name nf_hexa_down --battery-x -0.24 --probe down
 
 python3 sim/em_selftest.py                          # EM model check, no simulator
 
+# planar near-field scan of the 5 GHz AUT: short test first, then the full 441 points
+./sim/test_run.sh --model nf_hexa_trimmed -- nfscan --max-points 10
+./sim/test_run.sh --model nf_hexa_trimmed -- nfscan
+./sim/test_run.sh --model nf_hexa_trimmed -- nfscan --resume 2       # continue scan 2
+python3 sim/scan_db.py triggers 1                   # trigger attempts of flight 1
+
 # grid scan: a short test first, then the full grid, resumable
 ./sim/test_run.sh --model nf_hexa_down -- grid --max-points 10
 ./sim/test_run.sh --model nf_hexa_down -- grid --corner 10.25 -4.0 --end 9.65 -3.70   # 5 x 3 points
@@ -204,7 +270,9 @@ Results (CSV + PNG) go to `~/nf_runs/` (from Windows: `\\wsl$\Ubuntu-24.04\home\
 
 - Gazebo world ENU: x along the range (reflector at −x), y across, z up. Origin on the
   floor below the AUT aperture centre; aperture in the x = 0 plane facing +x, centre at
-  height 4 m. Drone spawns at (6, 0) facing the AUT (yaw 180°).
+  height 4 m. The drone spawns on the AUT boresight facing it (yaw 180°), at the take-off
+  point computed from the antenna frequency (x = 5.03 m at 5 GHz) or `--spawn "X Y"`.
+- Scan grid offsets: u to the drone's right, w up, on the plane parallel to the aperture.
 - ArduPilot's local NED origin is the world origin; `flight_test.py` measures it before
   take-off instead of assuming it.
 - Model body: x forward (towards the probe), y left, z up.
